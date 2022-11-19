@@ -1,4 +1,4 @@
-int SensorPIR = 2;
+int SensorPIR = 26;
 int buzzer = 13;
 int val = 0;
 int cou = 0;
@@ -11,19 +11,13 @@ void loop() {
   val = digitalRead (SensorPIR);
   Serial.print ("val = ");
   Serial.println (val);
-  Serial.println (cou);
-   if (val == 0) {
-     cou = cou + 1; //
-   }
-   if (val == 1) {
-     cou = 0; //
-   }
-   if (cou < 25) {
-    digitalWrite (buzzer, HIGH);
-    Serial.println ("Buzzer OFF");
-   }
-   if (cou > 25) {
-    digitalWrite (buzzer, LOW);
-    Serial.println("Buzzer ON");
-   }
+  if(val==0)
+  {
+    Serial.println("hay algo en medio");
+  }
+  else
+  {
+    Serial.println("no hay algo en medio");
+  }
+  delay(1000);
 }
