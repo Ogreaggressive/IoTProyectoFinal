@@ -1,7 +1,7 @@
 // Include the Alexa SDK v2
 const Alexa = require("ask-sdk-core");
 const AWS = require('aws-sdk');
-const IoTData = new AWS.IotData({endpoint:'endpoint' });
+const IoTData = new AWS.IotData({endpoint: 'a13f6domxjrswp-ats.iot.us-east-1.amazonaws.com'});
 
 const OpenRollerParams = {
     topic: '$aws/things/cosin/shadow/update',
@@ -27,6 +27,12 @@ const detectLightFalseParams = {
     qos: 0
 };
 
+const rollerInteractionParams = {
+    topic: '$aws/things/cosin/shadow/update',
+    payload: '',
+    qos: 0
+};
+
 const ShadowParams = {
   thingName: 'cosin'
 };
@@ -49,7 +55,7 @@ const LaunchRequestHandler = {
     return Alexa.getRequestType(handlerInput.requestEnvelope) === 'LaunchRequest';
   },
   handle(handlerInput) {
-    const speechText = 'Greetings, Would you like dinner or a bath or ... me ?';
+    const speechText = 'Greetings, my lord, what do you want me to do?';
 
     return handlerInput.responseBuilder
       .speak(speechText)
@@ -58,59 +64,54 @@ const LaunchRequestHandler = {
   }
 };
 
-const OpenRollerIntentHandler = {
+const RollerInteractionIntentHandler = {
       canHandle(handlerInput) {
         return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
-          && Alexa.getIntentName(handlerInput.requestEnvelope) === 'openRoller';
+          && Alexa.getIntentName(handlerInput.requestEnvelope) === 'rollerInteractionIntent';
       },
       async handle(handlerInput) {
-        let curtainState;
+        let curtainState
         let speechText;
+        var action = handlerInput.requestEnvelope.request.intent.slots.action.value;
+        var room = handlerInput.requestEnvelope.request.intent.slots.room.value;
         await getShadowPromise(ShadowParams)
-        .then((result) => curtainState = result.state.reported.curtainState);
-        console.log('TurnOnIntentHandler');
-        console.log(curtainState);
-    
-        if (curtainState == "CURTAIN_CLOSED") {
-          IoTData.publish(OpenRollerParams, function(err, data) {
+        .then((result) => curtainState = result.state.desired.rollers["roller"+room]["curtainState"]);
+        //console.log('TurnOnIntentHandler');
+        //console.log(curtainState);
+        let Json
+        
+        rollerInteractionParams.payload = Json
+        
+        if (action == "open" && curtainState != "CURTAIN_OPENED") 
+        {
+            Json = '{"state": {"desired": {"rollers": {"roller'+room+'": {"curtainState": "CURTAIN_OPENED"}}}}}'
+            rollerInteractionParams.payload = Json
+          IoTData.publish(rollerInteractionParams, function(err, data) {
             if (err) {
               console.log(err);
             }
           });
-          speechText = 'opening roller';
-        } else if (curtainState == "CURTAIN_OPENED") {
-          speechText = 'it is opened already';
+           speechText = "opening "+ room + " roller";
+        } 
+        else if(action == "open" && curtainState != "CURTAIN_CLOSED")
+        {
+          speechText = 'roller ' + room+ " its already open";
         }
-    
-        return handlerInput.responseBuilder
-          .speak(speechText)
-          .reprompt(speechText)
-          .getResponse();
-        }
-};
-
-const CloseRollerIntentHandler = {
-    canHandle(handlerInput) {
-        return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
-            && Alexa.getIntentName(handlerInput.requestEnvelope) === 'closeRoller';
-    },
-    async handle(handlerInput) {
-        let curtainState;
-        let speechText;
-        await getShadowPromise(ShadowParams)
-        .then((result) => curtainState = result.state.reported.curtainState);
-        console.log('TurnOnIntentHandler');
-        console.log(curtainState);
-    
-        if (curtainState == "CURTAIN_OPENED") {
-          IoTData.publish(CloseRollerParams, function(err, data) {
+        
+        if (action == "close" && curtainState != "CURTAIN_CLOSED") 
+        {
+          Json = '{"state": {"desired": {"rollers": {"roller'+room+'": {"curtainState": "CURTAIN_CLOSED"}}}}}'
+          rollerInteractionParams.payload = Json
+          IoTData.publish(rollerInteractionParams, function(err, data) {
             if (err) {
               console.log(err);
             }
           });
-          speechText = 'closing roller';
-        } else if (curtainState == "CURTAIN_CLOSED") {
-          speechText = 'it is closed already';
+          speechText = "closing "+ room + " roller";
+        }
+        else if(action == "close" && curtainState != "CURTAIN_OPENED")
+        {
+          speechText = 'roller ' + room+ " its already closed";
         }
     
         return handlerInput.responseBuilder
@@ -129,7 +130,7 @@ const EnableAutomaticModeIntentHandler = {
         let detectLightState;
         let speechText;
         await getShadowPromise(ShadowParams)
-        .then((result) => detectLightState = result.state.reported.detectLight);
+        .then((result) => detectLightState = result.state.desired.detectLight);
         console.log('TurnOnIntentHandler');
         console.log(detectLightState);
     
@@ -160,7 +161,7 @@ const DisableAutomaticModeIntentHandler = {
         let detectLightState;
         let speechText;
         await getShadowPromise(ShadowParams)
-        .then((result) => detectLightState = result.state.reported.detectLight);
+        .then((result) => detectLightState = result.state.desired.detectLight);
         console.log('TurnOnIntentHandler');
         console.log(detectLightState);
     
@@ -242,8 +243,7 @@ const SessionEndedRequestHandler = {
 exports.handler = Alexa.SkillBuilders.custom()
   .addRequestHandlers(
     LaunchRequestHandler,
-    OpenRollerIntentHandler,
-    CloseRollerIntentHandler,
+    RollerInteractionIntentHandler,
     EnableAutomaticModeIntentHandler,
     DisableAutomaticModeIntentHandler,
     HelpIntentHandler,

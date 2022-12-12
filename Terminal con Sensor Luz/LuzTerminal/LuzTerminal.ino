@@ -1,50 +1,44 @@
 #include <WiFiClientSecure.h>
-#include <PubSubClient.h>
 #include <WiFiManager.h>
+#include <PubSubClient.h>
 #include <ArduinoJson.h>
-//#define rollerID roller1
-String rollerID="rollerbathroom";
-//MotorPins
-const int SPEEDPIN=25;
-const int RIGHTDIRPIN=14;
-const int LEFTDIRPIN =27;
 
-//curtain Pins
-const int curtainSensorPin=18;
+int LIGHTRESISTANCE = 35;
+String rollersString="";
 
+const int THRESHOLD=2500;
 const String openCurtainState="CURTAIN_OPENED";
 const String closeCurtainState="CURTAIN_CLOSED";
 
-String currentCurtainState=openCurtainState;
-
+String lastCurtainStateSent=openCurtainState;
 
 //AWS BrokerConfig
 const char* AWS_ENDPOINT = "a13f6domxjrswp-ats.iot.us-east-1.amazonaws.com";
 const int AWS_ENDPOINT_PORT = 8883;
 
 //Topics
-const char* MQTT_CLIENT_ID = "test_ucb_cosin";
-
+const char* MQTT_CLIENT_ID = "terminalLight";
+bool detectLight=true;
 bool startedDevice=true;
-long timeToOpenRoller=0;
-
-
+bool Sleep=false;
+unsigned long previusMillis;
+unsigned long sleepPreviusMillis;
 
 const int requestShadowTopicIndex=0;
 const int reportStateTopicIndex=1;
+const int updateRollersTopicIndex=2;
 
-const String PUBLISH_TOPICS_ARRAY[]={
+const char* PUBLISH_TOPICS_ARRAY[]={
   "$aws/things/cosin/shadow/get",
-  "$aws/things/cosin/shadow/update"};
+  "$aws/things/cosin/shadow/update",
+  "rollers/light/command"};
 
-const int getShadowStateTopicIndex=0;
-const int desiredGetStateTopicIndex=1;
-const int listenForUpdateTopicIndex=2;
+const int desiredGetStateTopicIndex=0;
+const int listenForUpdateTopicIndex=1;
+const char* SUBSCRIBE_TOPICS_ARRAY[]={
+  "roller/light/get/desired/state",
+  "roller/light/update/state"};
 
-const String SUBSCRIBE_TOPICS_ARRAY[]={
-  "roller/get/reported/state",
-  "roller/get/desired/state",
-  "roller/update/state"};
 
 const char AMAZON_ROOT_CA1[] PROGMEM = R"EOF(-----BEGIN CERTIFICATE-----
 MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
@@ -118,114 +112,55 @@ C8a2NULbkVLsfVBXqmitXOT4LTNSn+O9FsgZ7FSV0kHDjkcP7P2Brwe7mh2+oFGZ
 -----END RSA PRIVATE KEY-----)KEY";
 
 
-void stopMotor()
+String getCurtainStatusBasedOnLight()
 {
-  digitalWrite (RIGHTDIRPIN,LOW ) ;
-  digitalWrite (LEFTDIRPIN, LOW);
+  int lightInput = analogRead(LIGHTRESISTANCE);
+  Serial.print("Detected Light:");
+  Serial.println(lightInput);
+  if (lightInput>THRESHOLD) //esta oscuro
+  {
+    return closeCurtainState;
+  }
+  else //esta claro
+  {
+    return openCurtainState;
+  }
 }
-void moveMotorLeft()
+void UpdateLightDetectionStatus(bool status)
 {
-  digitalWrite (RIGHTDIRPIN,LOW ) ;
-  digitalWrite (LEFTDIRPIN, HIGH);
+  detectLight=status;
+  Serial.println("Automatic mode:"+String(detectLight));
 }
-void moveMotorRight()
-{
-  digitalWrite (LEFTDIRPIN, LOW);
-  digitalWrite (RIGHTDIRPIN,HIGH ) ;
-}
-
-void closeCurtain()
-{
-    moveMotorLeft();
-    unsigned long startTime = millis();
-    while(digitalRead(curtainSensorPin)!=0){}
-    unsigned long endTime = millis();
-    stopMotor();
-    timeToOpenRoller=endTime-startTime;
-    currentCurtainState=closeCurtainState;
-    sendJSONWithCurrentState(true,true);
-
-}
-
-void openCurtain()
-{
-    moveMotorRight();
-    unsigned long startTime = millis();
-    while(timeToOpenRoller>millis()-startTime){}
-    stopMotor();
-    
-    currentCurtainState=openCurtainState;
-    sendJSONWithCurrentState(true,false);
-}
-
 
 WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
-DynamicJsonDocument inputDoc(1024);
+DynamicJsonDocument inputDoc(2048);
 // PubSubClient callback function
-void changeCurtainState(String desiredState)
-{
-  Serial.println("entro");
-    if(desiredState!=currentCurtainState )
-    {
-        if(desiredState==openCurtainState)
-        {
-          Serial.println("abriendo");
-            openCurtain();
-        }
-        else if(desiredState==closeCurtainState)
-        {
-          Serial.println("cerrando");
-            closeCurtain();
-        }
-    }
-}
 void callback(const char* topic, byte* payload, unsigned int length) {
   String message;
+  Serial.println(length);
   for (int i = 0; i < length; i++) 
   {
     message += String((char) payload[i]);
   }
-  Serial.print("llego un mensaje:");
-  Serial.println(String(topic));
-  
-  if (String(topic) == SUBSCRIBE_TOPICS_ARRAY[listenForUpdateTopicIndex] or String(topic) == SUBSCRIBE_TOPICS_ARRAY[desiredGetStateTopicIndex]) 
+  Serial.println(message.length());
+  bool shadowTopic=String(topic) == SUBSCRIBE_TOPICS_ARRAY[desiredGetStateTopicIndex];
+  bool updateTopic=String(topic) == SUBSCRIBE_TOPICS_ARRAY[listenForUpdateTopicIndex];
+  if (shadowTopic or updateTopic) 
   {
     Serial.println("Message from topic " + String(topic) + " : " + message);
     DeserializationError err = deserializeJson(inputDoc, payload);  
     if(!err)
     {
-        String desiredState = String(inputDoc["rollers"][rollerID]["curtainState"].as<char*>());
-        Serial.println(desiredState);
-        if(desiredState!="")
-        {
-          changeCurtainState(desiredState);
-        }
+      UpdateLightDetectionStatus(inputDoc["detectLight"]);
+      String newRollersString=String(inputDoc["rollers"].as<char*>());
+      if(newRollersString!="")
+      {
+        rollersString=newRollersString;
+        Serial.println(rollersString);
+      }
+      reportLightModeJSON(detectLight);
     }
-  }
-  
-  if (String(topic) == SUBSCRIBE_TOPICS_ARRAY[getShadowStateTopicIndex]) 
-  {
-    Serial.println("Message from topic " + String(topic) + " : " + message);
-    DeserializationError err = deserializeJson(inputDoc, payload);  
-    if(!err)
-    {
-      String curtainState=String(inputDoc["rollers"][rollerID]["curtainState"].as<char*>());
-        
-        if(curtainState=="")
-        {
-          currentCurtainState=openCurtainState;
-          timeToOpenRoller=0;
-        }
-        else
-        {
-          currentCurtainState=curtainState;
-          timeToOpenRoller =float(inputDoc["rollers"][rollerID]["timeToOpenRoller"]);
-        }
-        Serial.println(timeToOpenRoller);
-        Serial.println(currentCurtainState);
-    }
-    
   }
 }
 
@@ -234,11 +169,11 @@ void callback(const char* topic, byte* payload, unsigned int length) {
 
 void SubscribeToTopics()
 {
-  int size = sizeof(SUBSCRIBE_TOPICS_ARRAY)/sizeof(SUBSCRIBE_TOPICS_ARRAY[0]);
+  int size=sizeof(SUBSCRIBE_TOPICS_ARRAY)/sizeof(SUBSCRIBE_TOPICS_ARRAY[0]);
   for(int i=0;i<size;i++)
   {
-    mqttClient.subscribe(SUBSCRIBE_TOPICS_ARRAY[i].c_str());
-    Serial.println("Subscribed to " + SUBSCRIBE_TOPICS_ARRAY[i]);
+    mqttClient.subscribe(SUBSCRIBE_TOPICS_ARRAY[i]);
+    Serial.println("Subscribed to " + String(SUBSCRIBE_TOPICS_ARRAY[i]));
   }
 }
 boolean mqttClientConnect() {
@@ -253,17 +188,8 @@ boolean mqttClientConnect() {
 }
 
 void setup() {
-    
+    pinMode (LIGHTRESISTANCE, INPUT);
     Serial.begin(115200);
-    //MotorPinsSetup
-    pinMode (SPEEDPIN, OUTPUT);
-    pinMode (LEFTDIRPIN, OUTPUT);
-    pinMode (RIGHTDIRPIN, OUTPUT);
-    digitalWrite (SPEEDPIN,HIGH) ;
-    stopMotor();
-    //PhotoElectricSensorSetup
-    pinMode (curtainSensorPin, INPUT);
-
     WiFiManager wm;
     bool res;
     res = wm.autoConnect("AutoConnectAP"); 
@@ -273,7 +199,6 @@ void setup() {
     else {  
         Serial.println("Wifi Connected");
     }
-
 
     wifiClient.setCACert(AMAZON_ROOT_CA1);
     wifiClient.setCertificate(CERTIFICATE);
@@ -289,32 +214,39 @@ unsigned long previousPublishMillis = 0;
 unsigned char counter = 0;
 
 
-
-StaticJsonDocument<JSON_OBJECT_SIZE(7)> outputDoc;
-char outputBuffer[128];
-void sendJSONWithCurrentState(bool sendCurtainState,bool sendTimeToOpenRoller)
+//cambiar
+StaticJsonDocument<JSON_OBJECT_SIZE(4)> outputDocState;
+char outputBufferState[128];
+void changeRollersStatus(String curtainState)
 {
-    outputDoc["state"]["reported"]["rollers"][rollerID]["curtainState"] = currentCurtainState.c_str();
-    Serial.println("mandar tiempo:"+sendTimeToOpenRoller );
-    if(sendTimeToOpenRoller)
-    {
-        outputDoc["state"]["reported"]["rollers"][rollerID]["timeToOpenRoller"] = timeToOpenRoller;
-    }
-    serializeJson(outputDoc, outputBuffer);
-    Serial.println("Intenta enviar un estado");
-    Serial.println(outputBuffer);
-    mqttClient.publish(PUBLISH_TOPICS_ARRAY[reportStateTopicIndex].c_str(), outputBuffer);
+    outputDocState["allRollersCurtainState"] = curtainState.c_str();
+    outputDocState["rollerString"] = rollersString.c_str();
+    
+    serializeJson(outputDocState, outputBufferState);
+    Serial.println(outputBufferState);
+    mqttClient.publish(PUBLISH_TOPICS_ARRAY[updateRollersTopicIndex], outputBufferState);
 }
+StaticJsonDocument<JSON_OBJECT_SIZE(3)> outputDocMode;
+char outputBufferMode[128];
+void reportLightModeJSON(bool state)
+{
+    outputDocMode["state"]["reported"]["detectLight"] = state;
+    serializeJson(outputDocMode, outputBufferMode);
+    mqttClient.publish(PUBLISH_TOPICS_ARRAY[reportStateTopicIndex], outputBufferMode);
+}
+
 StaticJsonDocument<JSON_OBJECT_SIZE(1)> outputDocGetState;
 char outputBufferGetState[128];
 void sendJSONToAskForShadowInfo()
 {
-    outputDocGetState["id"] = rollerID.c_str();
+    outputDocGetState["get"] = 1;
     serializeJson(outputDocGetState, outputBufferGetState);
     Serial.println(outputBufferGetState);
-    mqttClient.publish(PUBLISH_TOPICS_ARRAY[requestShadowTopicIndex].c_str(), outputBufferGetState);
+    mqttClient.publish(PUBLISH_TOPICS_ARRAY[requestShadowTopicIndex], outputBufferGetState);
 }
-void loop() {
+
+void loop() 
+{
   unsigned long now = millis();
   if (!mqttClient.connected()) 
   {
@@ -327,13 +259,35 @@ void loop() {
   } 
   else 
   { 
-    mqttClient.loop();
-    delay(20);
     if(startedDevice)
     {
-        sendJSONToAskForShadowInfo();
-        startedDevice=false;
-      
+      sendJSONToAskForShadowInfo();
+      startedDevice=false;
+      previusMillis=now;
     }
+    delay(20);
+    mqttClient.loop();
+    //300000
+    if (Sleep and now - sleepPreviusMillis >=10000 )
+    {
+        Sleep=false;
+        previusMillis=now;
+    }
+    if(detectLight and Sleep==false and now - previusMillis >= 1000)
+    {
+      String desiredStatus=getCurtainStatusBasedOnLight();
+      if(desiredStatus!=lastCurtainStateSent)
+      {
+        Serial.println("nuevo status");
+        changeRollersStatus(desiredStatus);
+        lastCurtainStateSent=desiredStatus;
+        Sleep=true;
+        sleepPreviusMillis=now;
+        
+      }
+      previusMillis=now;
+    }
+    
   }
 }
+    
